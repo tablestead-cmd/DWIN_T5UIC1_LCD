@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+# lgpio notification pipes (if the service ever runs with this directory as its cwd)
+.lgd-nfy*
