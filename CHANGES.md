@@ -61,6 +61,8 @@ were kept. Menus look like the stock UI.
   open or both closed.
 - Configurable: pins, internal pull-ups on/off, knob direction (`reverse`), edges per
   detent, and debounce times for the knob and the button.
+- Button presses closer together than 100 ms (or `button_debounce_ms`, if longer) are
+  dropped as contact bounce, in software, whatever lgpio's debounce does.
 - GPIO callbacks only put events on the app's queue. gpiozero keeps only weak references
   to pin callbacks, so they are bound methods of a long-lived object.
 - Fast turning speeds up value editing (×2, ×5). The Z-offset babystep editor never
@@ -83,11 +85,14 @@ were kept. Menus look like the stock UI.
   - Nothing is sent unless Klipper is `ready`.
   - Home, jog, extrude, steppers off, Z offset and velocity limits are refused while
     printing or paused, and while Klipper is busy (`idle_timeout.state == "Printing"`).
-  - Jogs and Z-offset changes need `x`, `y` and `z` homed.
-  - Jogs re-read `toolhead.position` right before moving. They use a relative move
-    wrapped in `SAVE_GCODE_STATE`/`RESTORE_GCODE_STATE`, clamped to
-    `toolhead.axis_minimum`/`axis_maximum` read at run time. Z never goes below 0, even
-    if `position_min` is negative.
+  - Jogs, extrusion and Z-offset changes need `x`, `y` and `z` homed.
+  - Jogs are relative moves wrapped in `SAVE_GCODE_STATE`/`RESTORE_GCODE_STATE`,
+    clamped to `toolhead.axis_minimum`/`axis_maximum` read at run time. Z never goes
+    below 0, even if `position_min` is negative.
+  - The Move menu shows the live `toolhead.position`, and an edit starts from it. When
+    the edit is applied, the position is read again, and nothing moves if the toolhead
+    moved in the meantime (a Mainsail jog or a macro). The modal "Moving" popup goes up
+    first, so only one jog can be in flight. Pressing without turning sends nothing.
   - Temperatures are clamped to `configfile.settings.<heater>.max_temp` minus 15 °C
     (nozzle) or 10 °C (bed). While printing, the nozzle target can't go below
     `min_extrude_temp`.
@@ -115,7 +120,8 @@ were kept. Menus look like the stock UI.
 - Confirmations (Cancel preselected; turn left for Confirm): Auto home, start print,
   pause, resume, cancel, Z-offset apply, Z-offset save (shows old → new probe z_offset,
   warns about other pending SAVE_CONFIG changes), FIRMWARE_RESTART, and Z jogs to below
-  2 mm.
+  2 mm. When a confirmation is accepted, the printer state is checked again (for
+  example, a pause confirmed after Mainsail already paused is refused).
 - Refused actions show the reason ("Home all axes first", "Not allowed while
   printing", ...). Items that can't be used right now are shown in gray.
 - While printing, only the print screen and Tune are reachable. Tune has print speed
@@ -133,6 +139,8 @@ were kept. Menus look like the stock UI.
 ### Main loop (`dwinlcd/app.py`, new) and `run.py`
 - One thread owns the screen, the menus and the printer state. Moonraker and GPIO
   threads only queue events, so frames never interleave and the UI needs no locks.
+- The queue is a `queue.SimpleQueue`: its `put()` is reentrant, so the SIGTERM handler
+  cannot deadlock against the main loop.
 - The loop blocks on the queue; there is no busy loop. Timers: status refresh every
   `status_interval` (1 s), Klipper poll every 5 s while it is not ready, screen retry
   every 10 s, screen handshake every 60 s. Only changed values are redrawn: an idle
@@ -140,6 +148,10 @@ were kept. Menus look like the stock UI.
 - A missing screen, missing GPIO or missing Moonraker is logged (once, then rate
   limited) and retried; none of them is fatal. Knob input is ignored while no screen
   answers.
+- If the screen misses a handshake and then answers again, the init sequence is sent
+  again and everything is redrawn.
+- If the `configfile.settings` query fails, the 5 s poll retries it. Until it
+  succeeds, commands that need the limits are refused.
 - An unexpected exception while handling an event is logged with a traceback, and the
   screen goes back to a safe page instead of the process dying.
 - SIGTERM shows "Display service stopped" and exits 0.
@@ -164,12 +176,13 @@ were kept. Menus look like the stock UI.
 - `dwin-lcd.service` runs as `pi`, not root, with `Restart=on-failure`, `Nice=10` and
   `After=moonraker.service`. It gets a private runtime directory as lgpio's working
   directory (`LG_WD`). It logs to the journal instead of `/tmp/lcd.log`, and needs no
-  `sleep 30`.
+  `sleep 30`. Paths are made absolute, escaped for sed, and quoted in `ExecStart`, so
+  paths with spaces, `&` or `%` work.
 - `uninstall.sh` removes the unit and keeps the config unless `--purge` is given.
 - The Moonraker `[update_manager]` snippet is documentation only (README).
 
 ### Tests and mock mode (new)
-- `python3 -m unittest discover -s tests`: 78 tests, standard library only. The gpiozero
+- `python3 -m unittest discover -s tests`: 87 tests, standard library only. The gpiozero
   tests use its MockFactory and are skipped if gpiozero is missing.
   - Decoder: direction for both rest states, bounce, missed edges, reverse, half-cycle
     knobs, re-sync.
@@ -246,8 +259,23 @@ were kept. Menus look like the stock UI.
 
 ## How this was tested
 
-- 78 unit and integration tests on Python 3.13 (and 3.11 without gpiozero or pyserial),
+- 87 unit and integration tests on Python 3.13 (and 3.11 without gpiozero or pyserial),
   run five times in a row with no flaky results.
+- A separate review agent read the whole diff and probed it with scripts, including a
+  fuzz run of random knob and printer events. It found eight issues, all fixed:
+  - **High:** the Move menu edited a stale position. With the menu open while
+    Mainsail homed, pressing Move Z without turning sent `G1 Z-10` with no
+    confirmation.
+  - Two jogs could be in flight at once.
+  - A failed settings query was never retried.
+  - The SIGTERM handler could deadlock on `queue.Queue`.
+  - Extrusion did not require homing.
+  - install.sh mishandled relative paths and special characters.
+  - A screen that reset after a missed handshake was not redrawn.
+  - Confirmed actions did not re-check the state.
+
+  Each fix has a regression test, and I checked that these tests fail on the code as it
+  was before the fix.
 - Mock mode driven with scripted keystrokes.
 - The service was run as a `pi` user with no screen, no GPIO and Moonraker started
   later. It logged each problem once, connected when the mock Moonraker appeared,
@@ -303,6 +331,11 @@ were kept. Menus look like the stock UI.
     `ProtectSystem=full`/`NoNewPrivileges`, and Nice=10.
 12. **Load on the Pi 3B+:** CPU use and any effect on Klipper's timing are expected to
     be negligible but were not measured.
+13. **Known limitation:** the screen is only re-initialised when it misses a handshake.
+    If it resets (for example a 5 V glitch) and still answers the next handshake 60 s
+    later, the service does not notice, and the screen can stay wrong until
+    `sudo systemctl restart dwin-lcd`. The screen is powered from the Pi, so this is
+    unlikely.
 
 ## Decisions for Lane
 

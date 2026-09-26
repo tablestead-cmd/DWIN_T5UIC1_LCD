@@ -52,7 +52,7 @@ Get the code and run the hardware-free checks:
 ```bash
 cd ~ && git clone -b klipper-013-trixie-pi3 https://github.com/tablestead-cmd/DWIN_T5UIC1_LCD.git
 cd ~/DWIN_T5UIC1_LCD
-python3 -m unittest discover -s tests          # expect: "Ran 78 tests" ... "OK"
+python3 -m unittest discover -s tests          # expect: "Ran 87 tests" ... "OK"
 python3 tools/check_moonraker.py               # read-only; sends no G-code
 ```
 
@@ -226,7 +226,12 @@ Rollback: Cooldown, or `TURN_OFF_HEATERS` in Mainsail.
 7. Z floor: Move Z, press, turn counter-clockwise. The value stops at `0.0`. Pressing
    below 2 mm asks "Move Z to ... mm?". **Choose Cancel** unless you really want the
    nozzle at the bed.
-8. Prepare → Disable steppers. Motors release, and Move X is refused again.
+8. Live position: with the Move menu open, jog X by 10 mm from Mainsail. The Move X
+   value follows within a second.
+9. Stale-edit guard: start editing Move X (press), turn a few clicks, jog X from
+   Mainsail, then press. Expect a "Position changed" popup and **no** move from the
+   screen. Log: `jog x refused: toolhead moved from ... to ... while editing`.
+10. Prepare → Disable steppers. Motors release, and Move X is refused again.
 
 Rollback: Emergency Stop in Mainsail (then `FIRMWARE_RESTART`), or
 `sudo systemctl stop dwin-lcd`.
