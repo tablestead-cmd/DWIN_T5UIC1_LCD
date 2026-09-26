@@ -1,0 +1,70 @@
+# Settings for the Ender 3 V2 stock screen (DWIN T5UIC1) service.
+#
+# install.sh copies this file to ~/printer_data/config/dwin_lcd.conf (only if that file
+# does not exist yet), so it can be edited in Mainsail. This is NOT a Klipper config file:
+# do not [include] it in printer.cfg. After editing, restart the service:
+#     sudo systemctl restart dwin-lcd
+# Invalid values are ignored with a warning in the log (journalctl -u dwin-lcd).
+
+[general]
+# DEBUG logs every knob step; INFO is normal.
+log_level = INFO
+
+[display]
+# Serial port wired to the display (Pi GPIO14 = TX -> display RX, GPIO15 = RX <- display TX).
+serial_port = /dev/serial0
+baudrate = 115200
+# Set to true only to test a display whose TX line (display -> Pi) is not connected:
+# the service then draws without waiting for the display's handshake reply.
+skip_handshake = false
+# Backlight 31-255; leave empty to keep the display's own setting.
+brightness =
+
+[encoder]
+# BCM GPIO numbers (not header pin numbers). Defaults match the upstream README wiring:
+# ENT -> GPIO13 (pin 33), A -> GPIO19 (pin 35), B -> GPIO26 (pin 37).
+pin_a = 19
+pin_b = 26
+pin_button = 13
+# true if turning the knob clockwise moves the cursor up instead of down.
+reverse = false
+# Use the Pi's internal pull-up resistors (to 3.3 V). Set false if the lines already
+# have pull-ups, e.g. on a level shifter board.
+pull_up = true
+# Encoder edges per detent. 4 for the stock knob. Use 2 if one click moves two steps,
+# 8 if it takes two clicks to move one step.
+pulses_per_step = 4
+# Debounce filters in milliseconds (0 = off). The decoder already ignores bounce.
+encoder_debounce_ms = 0
+button_debounce_ms = 30
+
+[moonraker]
+# Moonraker's unix socket (MainsailOS: ~/printer_data/comms/moonraker.sock).
+socket = /home/pi/printer_data/comms/moonraker.sock
+
+[ui]
+# Title on the main screen; empty = the Pi's hostname.
+title =
+# Seconds between status (temperature/progress) screen updates.
+status_interval = 1.0
+# Jog speeds in mm/s for Prepare > Move, and extrusion speed.
+jog_speed_xy = 50
+jog_speed_z = 5
+extrude_speed = 5
+# Largest live Z offset (babystep) the knob may set, in mm (either direction).
+z_offset_limit = 1.0
+# Newest G-code files shown in the Print menu.
+max_files = 50
+
+# Preheat presets (Prepare > Preheat, Control > Temperature). Temperatures are also
+# limited at run time to Klipper's max_temp minus a margin (15 C nozzle, 10 C bed).
+# "Save" on the screen writes these values back into this file.
+[preheat_1]
+name = PLA
+hotend_temp = 200
+bed_temp = 60
+
+[preheat_2]
+name = ABS
+hotend_temp = 240
+bed_temp = 100
