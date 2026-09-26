@@ -1,0 +1,26 @@
+# Template for /etc/systemd/system/dwin-lcd.service. install.sh fills in the @...@ values;
+# edit this file and re-run ./install.sh instead of editing the installed unit.
+[Unit]
+Description=Ender 3 V2 stock screen (DWIN T5UIC1) for Klipper via Moonraker
+Documentation=https://github.com/tablestead-cmd/DWIN_T5UIC1_LCD
+After=network.target moonraker.service klipper.service
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+# gpiozero's lgpio pin factory writes small notification files into its working directory
+RuntimeDirectory=dwin-lcd
+WorkingDirectory=/run/dwin-lcd
+Environment=LG_WD=/run/dwin-lcd
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 @REPO@/run.py --config @CONFIG@
+Restart=on-failure
+RestartSec=10
+# Klipper shares this CPU and is timing sensitive: keep the display at a lower priority
+Nice=10
+NoNewPrivileges=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
