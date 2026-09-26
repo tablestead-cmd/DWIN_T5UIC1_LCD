@@ -92,15 +92,13 @@ All pins, the serial device and the baud rate can be changed in the config file.
 
 ```bash
 cd ~
-git clone -b klipper-013-trixie-pi3 https://github.com/tablestead-cmd/DWIN_T5UIC1_LCD.git
+git clone https://github.com/tablestead-cmd/DWIN_T5UIC1_LCD.git
 cd ~/DWIN_T5UIC1_LCD
 python3 -m unittest discover -s tests    # optional: no hardware needed, under a minute on a Pi 3B+
 python3 tools/check_moonraker.py         # optional, read-only: does Moonraker have what the display needs?
 ./install.sh                             # asks for your sudo password
 journalctl -u dwin-lcd -f                # watch the log; Ctrl+C stops watching, not the service
 ```
-
-(After this branch is merged, clone without `-b klipper-013-trixie-pi3`.)
 
 `install.sh` is safe to run again. It:
 
@@ -164,8 +162,7 @@ managed_services: dwin-lcd
 
 `managed_services` only works if `dwin-lcd` is also listed in
 `~/printer_data/moonraker.asvc`; without that line, remove `managed_services` and restart
-the service yourself after updates. Until the branch is merged, the checkout is on
-`klipper-013-trixie-pi3`, which the update manager will report as not on `main`.
+the service yourself after updates.
 
 ## Trying it without hardware
 

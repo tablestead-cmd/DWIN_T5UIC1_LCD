@@ -1,7 +1,7 @@
 # On-device test checklist
 
 For the local session with SSH access to `pi@ender3v2` (Raspberry Pi 3B+, MainsailOS 3).
-Branch `klipper-013-trixie-pi3`. Nothing in this branch has run on real hardware yet;
+Branch `main` (merged from `klipper-013-trixie-pi3`). Nothing here has run on real hardware yet;
 [CHANGES.md](CHANGES.md) lists what is UNVERIFIED.
 
 ## Ground rules
@@ -50,7 +50,7 @@ Expected:
 Get the code and run the hardware-free checks:
 
 ```bash
-cd ~ && git clone -b klipper-013-trixie-pi3 https://github.com/tablestead-cmd/DWIN_T5UIC1_LCD.git
+cd ~ && git clone https://github.com/tablestead-cmd/DWIN_T5UIC1_LCD.git
 cd ~/DWIN_T5UIC1_LCD
 python3 -m unittest discover -s tests          # expect: "Ran 87 tests" ... "OK"
 python3 tools/check_moonraker.py               # read-only; sends no G-code

@@ -1,6 +1,7 @@
 # Changes: Klipper 0.13 / MainsailOS 3 (Debian 13) / Pi 3B+ port
 
-Branch `klipper-013-trixie-pi3`, based on odwdinc/DWIN_T5UIC1_LCD `4f825fe` (2024-02-11).
+Developed on branch `klipper-013-trixie-pi3` (merged into `main` through pull request #1),
+based on odwdinc/DWIN_T5UIC1_LCD `4f825fe` (2024-02-11).
 Target: Raspberry Pi 3B+, MainsailOS 3.0.0 (Debian 13 "trixie", arm64), Python 3.13.5,
 Klipper v0.13.0-642, Moonraker v0.10.0 (API 1.5.0), Ender 3 V2 with the stock screen wired
 to the Pi's GPIO.
