@@ -4,7 +4,7 @@
 # rules live in one place and are unit tested:
 #   - nothing is sent unless Klipper is ready;
 #   - motion (home, jog, extrude, Z offset, steppers off) only while not printing and not
-#     busy, and jogs / Z offset changes only with x, y and z homed;
+#     busy, and jogs, extrusion and Z offset changes only with x, y and z homed;
 #   - positions and temperatures are clamped to limits read from Klipper at runtime
 #     (toolhead.axis_minimum/maximum, configfile settings), never hard-coded;
 #   - the knob never runs PROBE_CALIBRATE or TESTZ; Z offset uses SET_GCODE_OFFSET
@@ -21,13 +21,13 @@ FLOW_RANGE = (50, 150)  # M221 percent
 PROBE_SECTIONS = ("bltouch", "probe", "smart_effector")
 
 # Status fields the display subscribes to. Kept small because Klipper sends a diff for
-# every change about four times a second. toolhead.position is queried on demand only.
+# every change about four times a second (position only changes while moving).
 SUBSCRIPTION = {
 	"webhooks": ["state", "state_message"],
 	"print_stats": ["state", "filename", "print_duration", "total_duration", "message"],
 	"virtual_sdcard": ["progress", "is_active"],
 	"display_status": ["progress"],
-	"toolhead": ["homed_axes", "axis_minimum", "axis_maximum", "max_velocity", "max_accel",
+	"toolhead": ["homed_axes", "axis_minimum", "axis_maximum", "position", "max_velocity", "max_accel",
 		"square_corner_velocity", "minimum_cruise_ratio"],
 	"extruder": ["temperature", "target", "can_extrude"],
 	"heater_bed": ["temperature", "target"],
@@ -341,7 +341,8 @@ def jog(state, axis, target, cfg):
 	"""Move one axis to an absolute toolhead position with a relative move.
 
 	The target is clamped to the runtime axis limits (and Z >= 0). Returns None when
-	there is nothing to do. The caller must refresh toolhead.position right before.
+	there is nothing to do. The caller must re-read toolhead.position right before
+	(ui.UI.jog does, and refuses if it changed since the edit started).
 	"""
 	_require(check_homed(state))
 	axis = str(axis).lower()
@@ -366,7 +367,7 @@ def jog(state, axis, target, cfg):
 
 
 def extrude(state, amount, cfg):
-	_require(check_idle(state))
+	_require(check_homed(state))
 	if not state.can_extrude:
 		raise CommandRefused("Nozzle below %d C" % state.min_extrude_temp)
 	amount = min(MAX_EXTRUDE, max(-MAX_EXTRUDE, float(amount)))

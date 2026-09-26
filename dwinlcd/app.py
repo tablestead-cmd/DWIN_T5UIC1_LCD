@@ -43,7 +43,8 @@ class App:
 	def __init__(self, cfg, client_factory=MoonrakerClient, serial_factory=None, input_factory=None):
 		"""input_factory: None = GPIO via gpiozero, False = no knob, or a callable."""
 		self.cfg = cfg
-		self.events = queue.Queue()
+		# SimpleQueue.put() is reentrant, so the SIGTERM handler can use it safely
+		self.events = queue.SimpleQueue()
 		self.state = PrinterState()
 		self.ui = U.UI(self)
 		self.client = client_factory(cfg.moonraker_socket, self._client_event)
@@ -56,6 +57,7 @@ class App:
 		self.klippy_ready = False
 		self.mode = None
 		self._initializing = False
+		self._settings_pending = False
 		self._running = False
 		self._estimates = {}
 		self._last_rotate = 0.0
@@ -288,11 +290,24 @@ class App:
 		except (OSError, ValueError):
 			found = False
 		if found:
-			self._keepalive_failures = 0
+			if self._keepalive_failures:
+				log.info("DWIN: display answering again; redrawing")
+				self._keepalive_failures = 0
+				self._reinit_lcd()
 			return
 		self._keepalive_failures += 1
 		if self._keepalive_failures >= 2:
 			log.warning("DWIN: display stopped answering; redrawing when it is back")
+			self._drop_lcd()
+
+	def _reinit_lcd(self):
+		"""The display may have reset: send the init sequence and redraw everything."""
+		try:
+			self.lcd.init_display(self.cfg.brightness)
+			self.ui.attach(self.lcd)
+			self._flush_lcd()
+		except (OSError, ValueError) as exc:
+			log.warning("DWIN: write failed (%s)", exc)
 			self._drop_lcd()
 
 	def _drop_lcd(self):
@@ -357,6 +372,7 @@ class App:
 		self.moonraker_connected = True
 		self.klippy_ready = False
 		self._initializing = False
+		self._settings_pending = False
 		self.rpc("server.connection.identify", {"client_name": CLIENT_NAME, "version": __version__,
 			"type": "display", "url": CLIENT_URL}, self._on_identify, timeout=10)
 		self._request_server_info()
@@ -372,6 +388,7 @@ class App:
 		self.moonraker_connected = False
 		self.klippy_ready = False
 		self._initializing = False
+		self._settings_pending = False
 		self.state.klippy_state = "disconnected"
 		self._update_mode()
 
@@ -416,11 +433,17 @@ class App:
 			return
 		self._initializing = True
 		self.rpc("printer.info", None, self._on_printer_info, timeout=10)
-		self.rpc("printer.objects.query", {"objects": {"configfile": ["settings"]}}, self._on_config_settings,
-			timeout=20)
+		self._query_settings()
 		self.rpc("printer.objects.subscribe", {"objects": SUBSCRIPTION}, self._on_subscribed, timeout=20)
 
+	def _query_settings(self):
+		"""configfile.settings: temperature/velocity limits and the probe z_offset."""
+		self._settings_pending = True
+		self.rpc("printer.objects.query", {"objects": {"configfile": ["settings"]}}, self._on_config_settings,
+			timeout=20)
+
 	def _on_config_settings(self, result, error):
+		self._settings_pending = False
 		if error or not isinstance(result, dict):
 			log.warning("Klipper: reading configfile settings failed (%s)", error_message(error))
 			return
@@ -469,8 +492,12 @@ class App:
 		self._update_mode()
 
 	def _poll(self):
-		if self.moonraker_connected and not self.klippy_ready and not self._initializing:
+		if not self.moonraker_connected:
+			return
+		if not self.klippy_ready and not self._initializing:
 			self._request_server_info()
+		elif self.klippy_ready and not self.state.settings and not self._settings_pending:
+			self._query_settings()  # an earlier query failed: limits stay unknown until this works
 
 	# ------------------------------------------------------------ screen mode
 

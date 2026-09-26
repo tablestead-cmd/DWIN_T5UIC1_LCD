@@ -132,10 +132,12 @@ class CommandTest(unittest.TestCase):
 			P.jog(homed_state(), "e", 10, self.cfg)
 
 	def test_extrude(self):
-		cold = make_state()
+		cold = homed_state()
 		with self.assertRaisesRegex(P.CommandRefused, "170"):
 			P.extrude(cold, 5, self.cfg)
-		hot = make_state(extruder={"temperature": 210.0, "can_extrude": True})
+		with self.assertRaisesRegex(P.CommandRefused, "Home"):
+			P.extrude(make_state(extruder={"temperature": 210.0, "can_extrude": True}), 5, self.cfg)
+		hot = homed_state(extruder={"temperature": 210.0, "can_extrude": True})
 		self.assertEqual(P.extrude(hot, 5, self.cfg), "SAVE_GCODE_STATE NAME=_dwin_extrude\nM83\n"
 			"G1 E5 F300\nRESTORE_GCODE_STATE NAME=_dwin_extrude")
 		self.assertIn("G1 E-50 ", P.extrude(hot, -500, self.cfg))

@@ -236,6 +236,7 @@ class FakePrinter:
 		self.scripts = []  # every G-code line received
 		self.requests = []  # every (method, params)
 		self.fail_commands = {}  # G-code word -> error message (tests)
+		self.fail_queries = set()  # object names whose next printer.objects.query fails once
 		self.print_seconds = 120.0  # simulated print length for advance()
 		self.pending_config = {}
 		self.config_saves = 0
@@ -320,6 +321,10 @@ class FakePrinter:
 
 	def _m_printer_objects_query(self, params):
 		self._require_klippy()
+		failing = self.fail_queries.intersection(params.get("objects") or {})
+		if failing:
+			self.fail_queries.difference_update(failing)
+			raise FakeError("simulated query failure")
 		return {"eventtime": time.monotonic(), "status": self._select(params.get("objects"))}
 
 	def _m_printer_objects_subscribe(self, params):
@@ -762,6 +767,8 @@ class FakeClient:
 		self._on_event = on_event
 		self.connected = False
 		self.calls = []
+		self.hold = False  # True: keep responses until release() (a slow Moonraker)
+		self.held = []
 		printer.listeners.append(self._notify)
 
 	def start(self):
@@ -778,8 +785,18 @@ class FakeClient:
 		else:
 			result, error = None, make_error("Moonraker is not connected")
 		if callback is not None:
-			self._on_event("response", (callback, copy.deepcopy(result), error))
+			event = ("response", (callback, copy.deepcopy(result), error))
+			if self.hold:
+				self.held.append(event)
+			else:
+				self._on_event(*event)
 		return len(self.calls)
+
+	def release(self):
+		self.hold = False
+		held, self.held = self.held, []
+		for event in held:
+			self._on_event(*event)
 
 	def _notify(self, method, params):
 		if self.connected:

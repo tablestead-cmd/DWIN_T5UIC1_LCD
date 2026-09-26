@@ -18,6 +18,8 @@ from .moonraker import error_message
 log = logging.getLogger(__name__)
 
 GCODE_TIMEOUT = 600.0
+Z_CONFIRM_BELOW = 2.0  # mm: ask before a jog takes the nozzle this close to the bed
+POSITION_TOLERANCE = 0.02  # mm: toolhead must still be where the edit started
 
 # Layout (Marlin dwin.cpp)
 TROWS = 6  # rows in a list menu, Back included
@@ -304,10 +306,13 @@ class UI:
 
 	# -------------------------------------------------------- commands
 
-	def request(self, method, params=None, busy=None, done=None, timeout=30.0):
-		"""Send a Moonraker request; errors are shown in a popup (if still relevant)."""
+	def request(self, method, params=None, busy=None, done=None, timeout=30.0, busy_page=None):
+		"""Send a Moonraker request; errors are shown in a popup (if still relevant).
+
+		busy: (title, lines, icon) for a modal "please wait" popup, or busy_page to keep one
+		that is already shown; it closes when Moonraker answers.
+		"""
 		generation = self.generation
-		busy_page = None
 		if busy:
 			title, lines, icon = busy
 			busy_page = Busy(self, title, lines, icon)
@@ -330,6 +335,14 @@ class UI:
 		log.info("request: %s %s", method, params or "")
 		self.app.rpc(method, params, finished, timeout)
 
+	def checked_request(self, check, method, params=None):
+		"""request() for a confirmed action, after checking the printer state again."""
+		reason = check(self.app.state)
+		if reason:
+			self.refuse(reason)
+		else:
+			self.request(method, params)
+
 	def gcode(self, script, busy=None, done=None):
 		log.info("gcode: %s", script.replace("\n", " | "))
 		self.request("printer.gcode.script", {"script": script}, busy, done, GCODE_TIMEOUT)
@@ -345,19 +358,49 @@ class UI:
 		if script:
 			self.gcode(script, busy, done)
 
-	def jog(self, axis, target):
-		"""Refresh the toolhead position, then move (the clamp needs a fresh position)."""
+	def jog(self, axis, target, expected=None, confirmed=False):
+		"""Move one axis to `target` (toolhead coordinates).
+
+		The modal "Moving" popup goes up first, so no second move can start, then the
+		position is read again. If the toolhead is no longer at `expected` (the value the
+		edit started from; Mainsail or a macro moved it meanwhile), nothing is sent.
+		"""
 		generation = self.generation
+		busy = Busy(self, "Moving " + axis.upper(), ["Please wait."])
+		self.push(busy)
+
+		def stop(show):
+			self.remove(busy, redraw=False)
+			show()
+			self.ensure_drawn()
 
 		def queried(error):
-			if generation != self.generation:
+			if generation != self.generation or busy not in self.stack:
 				return
+			state = self.app.state
+			current = state.position(axis)
 			if error:
-				self.message("Move failed", error_message(error))
-				return
-			self.command(P.jog, axis, target, self.app.cfg,
-				busy=("Moving " + axis.upper(), ["Please wait."], None),
-				done=self.app.query_position)
+				return stop(lambda: self.message("Move failed", error_message(error)))
+			if current is None:
+				return stop(lambda: self.refuse("Axis position unknown"))
+			if expected is not None and abs(current - expected) > POSITION_TOLERANCE:
+				log.info("jog %s refused: toolhead moved from %.3f to %.3f while editing", axis, expected, current)
+				return stop(lambda: self.message("Position changed",
+					"The toolhead moved while you were editing. Check the new position and try again."))
+			if axis == "z" and not confirmed and target < Z_CONFIRM_BELOW and target < current:
+				return stop(lambda: self.confirm("Move Z to %.1f mm?" % target,
+					["The nozzle will be", "close to the bed."],
+					lambda: self.jog(axis, target, expected=current, confirmed=True)))
+			try:
+				script = P.jog(state, axis, target, self.app.cfg)
+			except P.CommandRefused as exc:
+				log.info("refused: %s", exc)
+				return stop(lambda: self.refuse(str(exc)))
+			if not script:
+				return stop(lambda: None)
+			log.info("gcode: %s", script.replace("\n", " | "))
+			self.request("printer.gcode.script", {"script": script}, done=self.app.query_position,
+				timeout=GCODE_TIMEOUT, busy_page=busy)
 
 		self.app.query_position(queried)
 
@@ -538,7 +581,11 @@ class StatusScreen(Page):
 			return
 		self.ui.confirm("Run FIRMWARE_RESTART?",
 			["Restarts Klipper and the", "printer mainboard (MCU).", "Fix the cause first."],
-			lambda: self.ui.request("printer.firmware_restart"))
+			self._restart)
+
+	def _restart(self):
+		if self.content()[2]:  # still shut down / in error when confirmed
+			self.ui.request("printer.firmware_restart")
 
 
 class MainMenu(Page):
@@ -689,18 +736,19 @@ class PrintPage(Page):
 			if reason:
 				return ui.refuse(reason)
 			ui.confirm("Resume print?", ["The toolhead moves back", "to the print."],
-				lambda: ui.request("printer.print.resume"))
+				lambda: ui.checked_request(P.check_can_resume, "printer.print.resume"))
 		elif self.sel == 1:
 			reason = P.check_can_pause(state)
 			if reason:
 				return ui.refuse(reason)
-			ui.confirm("Pause print?", ["Runs the PAUSE macro."], lambda: ui.request("printer.print.pause"))
+			ui.confirm("Pause print?", ["Runs the PAUSE macro."],
+				lambda: ui.checked_request(P.check_can_pause, "printer.print.pause"))
 		else:
 			reason = P.check_can_cancel(state)
 			if reason:
 				return ui.refuse(reason)
 			ui.confirm("Cancel print?", ["Runs CANCEL_PRINT.", "This cannot be undone."],
-				lambda: ui.request("printer.print.cancel"))
+				lambda: ui.checked_request(P.check_can_cancel, "printer.print.cancel"))
 
 
 class InfoPage(Page):
@@ -791,6 +839,7 @@ class ListMenu(Page):
 		self.sel = 0
 		self.top = 0
 		self.editing = None  # [item, value]
+		self.edit_start = None  # value when the current/last edit began
 		self._items = None
 		self._shown = {}  # row -> value text on screen
 
@@ -912,6 +961,7 @@ class ListMenu(Page):
 			self.ui.refuse("Value not available yet")
 			return
 		self.editing = [item, float(value)]
+		self.edit_start = float(value)
 		self._draw_value(self.sel - self.top, item, item.edit.text(value), editing=True)
 
 	def _edit_step(self, steps, mult):
@@ -929,7 +979,8 @@ class ListMenu(Page):
 		item, value = self.editing
 		self.editing = None
 		self._draw_value(self.sel - self.top, item, item.edit.text(value))
-		item.edit.apply(value)
+		if value != self.edit_start:  # pressing without turning applies nothing
+			item.edit.apply(value)
 
 
 class FileMenu(ListMenu):
@@ -960,7 +1011,7 @@ class FileMenu(ListMenu):
 	def _pick(self, path):
 		ui = self.ui
 		ui.confirm("Start print?", wrap(os.path.basename(path), POPUP_CHARS, 3) + ["", "The printer will heat", "and move."],
-			lambda: ui.request("printer.print.start", {"filename": path}))
+			lambda: ui.checked_request(P.check_idle, "printer.print.start", {"filename": path}))
 
 
 class PrepareMenu(ListMenu):
@@ -991,12 +1042,9 @@ class PrepareMenu(ListMenu):
 
 
 class MoveMenu(ListMenu):
-	title = "Move"
-	Z_CONFIRM_BELOW = 2.0  # mm: ask before jogging the nozzle this close to the bed
+	"""Values are the live toolhead position (subscribed); a jog goes to the edited value."""
 
-	def __init__(self, ui):
-		super().__init__(ui)
-		self.app.query_position()
+	title = "Move"
 
 	def build(self):
 		state = self.state
@@ -1022,16 +1070,10 @@ class MoveMenu(ListMenu):
 		return None if limits is None else limits[1]
 
 	def _jog(self, axis, target):
-		ui = self.ui
-		current = self.state.position(axis)
-		if axis == "z" and target < self.Z_CONFIRM_BELOW and (current is None or target < current):
-			ui.confirm("Move Z to %.1f mm?" % target, ["The nozzle will be", "close to the bed."],
-				lambda: ui.jog(axis, target))
-		else:
-			ui.jog(axis, target)
+		self.ui.jog(axis, target, expected=self.edit_start)
 
 	def _check_extrude(self):
-		reason = P.check_idle(self.state)
+		reason = P.check_homed(self.state)
 		if reason:
 			return reason
 		if not self.state.can_extrude:

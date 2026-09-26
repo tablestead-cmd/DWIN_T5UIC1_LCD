@@ -33,6 +33,18 @@ class BootTest(unittest.TestCase):
 		h.rotate(1)
 		self.assertTrue(h.screen.has("[Print] [Prepare*]"))
 
+	def test_display_reset_is_redrawn(self):
+		h = Harness()
+		h.app._keepalive_due = 0
+		h.port.present = False
+		h.app._lcd_watchdog()  # one missed handshake
+		h.port.present = True
+		h.screen.items.clear()  # the display rebooted to its own boot picture
+		h.app._keepalive_due = 0
+		h.app._lcd_watchdog()
+		h.pump()
+		self.assertTrue(h.screen.has("[Print*]"))
+
 	def test_status_area_only_redraws_changes(self):
 		h = Harness()
 		before = h.port.bytes_written
@@ -100,9 +112,13 @@ class PrepareTest(unittest.TestCase):
 		self.assertEqual(h.printer.scripts[-2], "G1 Z-10 F300")
 		self.assertEqual(h.app.state.position("z"), 0.0)
 
-	def test_extrude_needs_hot_nozzle(self):
+	def test_extrude_needs_homing_and_hot_nozzle(self):
 		h = self.h
 		h.open("Move", "Extrude")
+		self.assertTrue(h.screen.has("Home all axes first"))
+		h.press()
+		h.home()
+		h.open("Extrude")
 		self.assertTrue(h.screen.has("Heat the nozzle to 170 C"))
 		h.press()
 		h.printer.set("extruder", temperature=215.0, target=215.0)
@@ -176,6 +192,72 @@ class PrepareTest(unittest.TestCase):
 		h.open("Disable steppers")
 		self.assertIsInstance(h.page, U.Message)
 		self.assertTrue(h.screen.has("Stepper enable failed"))
+
+
+class MoveSafetyTest(unittest.TestCase):
+	"""Jogs must start from where the toolhead really is (review findings 1 and 2)."""
+
+	def setUp(self):
+		self.h = Harness()
+		self.h.rotate(1)
+		self.h.press()  # Prepare
+
+	def test_values_follow_the_live_position(self):
+		h = self.h
+		h.open("Move")
+		h.home()  # e.g. from Mainsail while the menu is open
+		self.assertTrue(h.screen.has("Move X 155.0") and h.screen.has("Move Z 10.0"))
+		h.printer.handle("printer.gcode.script", {"script": "G1 X100"})
+		h.pump()
+		self.assertTrue(h.screen.has("Move X 100.0"))
+
+	def test_edit_is_refused_if_the_toolhead_moved_meanwhile(self):
+		h = self.h
+		h.home()
+		h.open("Move", "Move X")  # edit starts at 155
+		h.rotate(3)
+		h.printer.handle("printer.gcode.script", {"script": "G1 X100"})  # Mainsail moves X
+		h.pump()
+		h.press()
+		self.assertIsInstance(h.page, U.Message)
+		self.assertTrue(h.screen.has("Position changed"))
+		self.assertNotIn("G91", h.printer.scripts)
+		self.assertEqual(h.app.state.position("x"), 100.0)
+
+	def test_press_without_turning_moves_nothing(self):
+		h = self.h
+		h.home()
+		h.open("Move", "Move Z")
+		h.press()
+		self.assertIsInstance(h.page, U.MoveMenu)
+		self.assertNotIn("G91", h.printer.scripts)
+
+	def test_menu_opened_before_homing_elsewhere_moves_nothing(self):
+		# Reviewer's scenario: the old code showed Z 0.0 from before the G28 and sent G1 Z-10.
+		h = self.h
+		h.open("Move")
+		h.home()
+		h.open("Move Z")
+		h.press()  # no turn
+		self.assertNotIn("G91", h.printer.scripts)
+		self.assertEqual(h.app.state.position("z"), 10.0)
+
+	def test_no_second_jog_while_one_is_in_flight(self):
+		h = self.h
+		h.home()
+		h.client.hold = True  # Moonraker answers late
+		h.open("Move", "Move X")
+		h.rotate(1)
+		h.press()  # first jog: modal popup up, position query pending
+		self.assertIsInstance(h.page, U.Busy)
+		h.press()
+		h.rotate(1)
+		h.press()  # ignored while the popup is up
+		h.client.release()
+		h.pump()
+		self.assertEqual(h.printer.scripts.count("G91"), 1)
+		self.assertEqual(h.app.state.position("x"), 156.0)
+		self.assertIsInstance(h.page, U.MoveMenu)
 
 
 class ControlTest(unittest.TestCase):
@@ -274,6 +356,18 @@ class PrintTest(unittest.TestCase):
 		h.press()
 		self.assertIsInstance(h.page, U.MainMenu)
 
+	def test_confirmed_pause_rechecks_the_state(self):
+		h = Harness()
+		self.start_print(h)
+		h.rotate(1)
+		h.press()  # "Pause print?"
+		h.printer.handle("printer.print.pause", {})  # paused from Mainsail meanwhile
+		h.pump()
+		self.assertIsInstance(h.page, U.Confirm)
+		h.confirm()
+		self.assertTrue(h.screen.has("Not printing"))
+		self.assertNotIn("printer.print.pause", [method for method, _params in h.client.calls])
+
 	def test_tune_changes_only_speed_flow_and_temps(self):
 		h = Harness()
 		self.start_print(h)
@@ -365,6 +459,22 @@ class ResilienceTest(unittest.TestCase):
 		h.app._poll()  # the 5 s poll notices Klipper came back
 		h.pump()
 		self.assertIsInstance(h.page, U.MainMenu)
+
+	def test_failed_settings_query_is_retried(self):
+		printer = __import__("dwinlcd.mock", fromlist=["FakePrinter"]).FakePrinter()
+		printer.fail_queries.add("configfile")
+		h = Harness(printer=printer)
+		self.assertEqual(h.app.state.settings, {})
+		h.rotate(1)
+		h.press()
+		h.open("Preheat PLA")
+		self.assertTrue(h.screen.has("Temperature limits unknown"))
+		h.press()
+		h.app._poll()  # the 5 s poll asks again
+		h.pump()
+		self.assertIn("extruder", h.app.state.settings)
+		h.open("Preheat PLA")
+		self.assertEqual(h.printer.scripts[-2], "SET_HEATER_TEMPERATURE HEATER=extruder TARGET=200")
 
 	def test_moonraker_restart(self):
 		h = Harness()
