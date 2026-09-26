@@ -117,6 +117,20 @@ class GpioInputTest(unittest.TestCase):
 		self.assertEqual(self.events, [1, 1, -1, "press"])
 		device.close()
 
+	def test_button_bounce_gives_one_press(self):
+		import time
+		device = self.make(button_debounce_ms=0)
+		button = self.factory.pin(13)
+		for _ in range(3):  # a bouncing contact within a few milliseconds
+			button.drive_low()
+			button.drive_high()
+		self.assertEqual(self.events, ["press"])
+		time.sleep(0.12)
+		button.drive_low()
+		button.drive_high()
+		self.assertEqual(self.events, ["press", "press"])
+		device.close()
+
 	def test_custom_pins_and_reverse(self):
 		device = self.make(pin_a=5, pin_b=6, pin_button=12, reverse=True)
 		a, b = self.factory.pin(5), self.factory.pin(6)

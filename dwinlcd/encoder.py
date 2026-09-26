@@ -10,6 +10,8 @@ import time
 
 log = logging.getLogger(__name__)
 
+MIN_PRESS_INTERVAL = 0.1  # s: presses closer together than this are contact bounce
+
 # state = (A << 1) | B using the raw pin levels. One detent of the Ender 3 V2 knob is a
 # full Gray-code cycle (Marlin uses ENCODER_PULSES_PER_STEP 4 for this screen).
 # "B changes before A" is +1 (clockwise); this matches both Marlin's DWIN encoder code
@@ -98,6 +100,7 @@ class GpioInput:
 			# External pull-up (e.g. on a level shifter): pressed still means "low".
 			self.button = Button(cfg.pin_button, pull_up=None, active_state=False,
 				bounce_time=button_bounce, pin_factory=pin_factory)
+		self._last_press = float("-inf")
 		self.button.when_pressed = self._pressed
 		self.factory = self.button.pin_factory
 		self.pin_a = self.factory.pin(cfg.pin_a)
@@ -133,6 +136,11 @@ class GpioInput:
 			self._on_rotate(step)
 
 	def _pressed(self):
+		# Independent of lgpio's debounce: a bouncing contact never gives two presses.
+		now = time.monotonic()
+		if now - self._last_press < max(MIN_PRESS_INTERVAL, self.cfg.button_debounce_ms / 1000.0):
+			return
+		self._last_press = now
 		self._on_press()
 
 	def close(self):
