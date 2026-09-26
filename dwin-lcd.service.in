@@ -14,7 +14,7 @@ RuntimeDirectory=dwin-lcd
 WorkingDirectory=/run/dwin-lcd
 Environment=LG_WD=/run/dwin-lcd
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/python3 @REPO@/run.py --config @CONFIG@
+ExecStart=/usr/bin/python3 "@REPO@/run.py" --config "@CONFIG@"
 Restart=on-failure
 RestartSec=10
 # Klipper shares this CPU and is timing sensitive: keep the display at a lower priority

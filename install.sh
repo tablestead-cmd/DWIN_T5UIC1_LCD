@@ -19,6 +19,10 @@ usage() {
 }
 
 step() { printf '\n==> %s\n' "$*"; }
+# Escape a value for the replacement part of sed "s#...#...#"
+sed_escape() { printf '%s' "$1" | sed -e 's/[#&\\]/\\&/g'; }
+# Escape a value for a double-quoted systemd ExecStart argument (% starts a specifier)
+unit_escape() { printf '%s' "$1" | sed -e 's/[\\"]/\\&/g' -e 's/%/%%/g'; }
 warn() { printf 'WARNING: %s\n' "$*" >&2; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
@@ -48,7 +52,7 @@ fi
 id "$SERVICE_USER" >/dev/null 2>&1 || die "user '$SERVICE_USER' does not exist"
 SERVICE_GROUP="$(id -gn "$SERVICE_USER")"
 USER_HOME="$(getent passwd "$SERVICE_USER" | cut -d: -f6)"
-PRINTER_DATA="${PRINTER_DATA:-$USER_HOME/printer_data}"
+PRINTER_DATA="$(realpath -m "${PRINTER_DATA:-$USER_HOME/printer_data}")"
 CONFIG_FILE="$PRINTER_DATA/config/dwin_lcd.conf"
 MOONRAKER_SOCKET="$PRINTER_DATA/comms/moonraker.sock"
 UNIT_FILE="/etc/systemd/system/$SERVICE.service"
@@ -118,7 +122,8 @@ if [ -f "$CONFIG_FILE" ]; then
 	echo "keeping existing $CONFIG_FILE"
 else
 	tmp_config="$(mktemp)"
-	sed "s#/home/pi/printer_data/comms/moonraker.sock#$MOONRAKER_SOCKET#" "$REPO_DIR/dwin_lcd.conf.example" > "$tmp_config"
+	sed "s#/home/pi/printer_data/comms/moonraker.sock#$(sed_escape "$MOONRAKER_SOCKET")#" \
+		"$REPO_DIR/dwin_lcd.conf.example" > "$tmp_config"
 	"${SUDO[@]}" install -m 644 -o "$SERVICE_USER" -g "$SERVICE_GROUP" "$tmp_config" "$CONFIG_FILE"
 	rm -f "$tmp_config"
 	echo "created $CONFIG_FILE (editable in Mainsail)"
@@ -131,8 +136,10 @@ fi
 
 step "systemd unit $UNIT_FILE"
 tmp_unit="$(mktemp)"
-sed -e "s#@USER@#$SERVICE_USER#g" -e "s#@GROUP@#$SERVICE_GROUP#g" -e "s#@REPO@#$REPO_DIR#g" \
-	-e "s#@CONFIG@#$CONFIG_FILE#g" "$REPO_DIR/dwin-lcd.service.in" > "$tmp_unit"
+sed -e "s#@USER@#$(sed_escape "$SERVICE_USER")#g" -e "s#@GROUP@#$(sed_escape "$SERVICE_GROUP")#g" \
+	-e "s#@REPO@#$(sed_escape "$(unit_escape "$REPO_DIR")")#g" \
+	-e "s#@CONFIG@#$(sed_escape "$(unit_escape "$CONFIG_FILE")")#g" \
+	"$REPO_DIR/dwin-lcd.service.in" > "$tmp_unit"
 if [ -f "$UNIT_FILE" ] && cmp -s "$tmp_unit" "$UNIT_FILE"; then
 	echo "unit is up to date"
 else
